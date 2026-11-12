@@ -53,7 +53,7 @@ async def create_event(payload: EventPayload):
     try: 
         response = supabase.table('events').insert(db_record).execute() 
         inserted_id = response.data[0]['id']
-        print(response)
+        print(response.model_dump_json(indent=4))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
 
