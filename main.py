@@ -1,67 +1,35 @@
-from fastapi import FastAPI, HTTPException, Depends
-from supabase import create_client, Client
-from dotenv import load_dotenv
 import os
+import json
+import redis
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Depends
 
-from models import EventPayload
-from fraud_engine import evaluate_fraud_rules
-from fraud_engine import ReasonCodes as RC
-from fraud_engine import ResultValues as RV
 from security import verify_signature
+from models import EventPayload
 
 load_dotenv()
 
-GuardAPI = FastAPI(title="Guard API",
-                   description="Multi-tenant risk deterrent engine")
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(
-    supabase_url=SUPABASE_URL, supabase_key=SUPABASE_KEY)
+
+RedisCLI = redis.Redis(host="localhost", port=6379, decode_responses=True)
+GuardAPI = FastAPI(title="Guard API", description="Multi-tenant risk deterrent engine")
 
 
 @GuardAPI.post('/events', status_code=201, dependencies=[Depends(verify_signature)])
 # Receives an event, evaluate fraud roles, saves to DB, and returns the score..
 async def create_event(payload: EventPayload):
-    """
-    1. Evaluate Fraud:
-        Validated Data from Pydantic -> Redis-Powered Engine
-    """
-    fraud_res = evaluate_fraud_rules(
-        tenant_id=payload.tenant_id,
-        user_id=payload.user_id,
-        device_id=payload.device_id
-    )
 
-    trust_score = fraud_res[RV.RV_TRUST_SCORE.value]
-    reason_codes = fraud_res[RV.RV_REASON_CODE.value]
+    event_data = payload.model_dump()
+    event_json = json.dumps(event_data)
 
-    """ 
-    2. Save to Database:
-        We prepare the exact dictionary structure that matches our "supabase" events tab.
-        Self Note: supabase converts the 'db_record' directly -> to json. Refer: https://supabase.com/docs/reference/python/insert
-    """
-    db_record = {
-        "tenant_id": payload.tenant_id,
-        "device_id": payload.device_id,
-        "user_id": payload.user_id,
-        "event_type": payload.event_type,
-        "ip_address": payload.ip_address,
-        "trust_score": trust_score,
-        "reason_codes": reason_codes
-    }
+    RedisCLI.lpush("event_queue", event_json)
+    response = {
+        "status": "accepted",
+        "message": "Event queue for processing",
+        "event_id": payload.sess_id
+    }   
 
-    try:
-        response = supabase.table('events').insert(db_record).execute()
-        inserted_id = response.data[0]['id']
-        print(response.model_dump_json(indent=4))
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Database Error: {str(e)}")
+    print(f"Response: {json.dumps(response, indent=4)}")
 
-    return {
-        "status": "success",
-        "event_id": inserted_id,
-        "trust_score": trust_score,
-        "reason_codes": reason_codes
-    }
+    return response
